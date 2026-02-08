@@ -1,4 +1,4 @@
-print(">>> Iniciando Samanta con Hugging Face integrado <<<")import os
+print("TOKEN cargado:", BOT_TOKEN[:10] if BOT_TOKEN else "No encontrado")print(">>> Iniciando Samanta con Hugging Face integrado <<<")import os
 import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
