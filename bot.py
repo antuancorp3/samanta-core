@@ -21,12 +21,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Nuevo comando /ia (Hugging Face)
 async def ia(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text.replace("/ia", "").strip()
-    response = requests.post(HF_API, headers=headers, json={"inputs": user_text})
-    data = response.json()
-    if isinstance(data, list) and "generated_text" in data[0]:
-        reply = data[0]["generated_text"]
-    else:
-        reply = "No pude generar respuesta 😅"
+    try:
+        response = requests.post(HF_API, headers=headers, json={"inputs": user_text})
+        data = response.json()
+        if isinstance(data, list) and "generated_text" in data[0]:
+            reply = data[0]["generated_text"]
+        else:
+            reply = "No pude generar respuesta 😅"
+    except Exception as e:
+        reply = f"Error al conectar con Hugging Face: {e}"
     await update.message.reply_text(reply)
 
 # Respuesta general
@@ -38,10 +41,13 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Mensaje recibido. Estoy observando.")
 
 def main():
+    if not BOT_TOKEN:
+        raise ValueError("No se encontró TELEGRAM_BOT_TOKEN en variables de entorno")
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ia", ia))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reply))
+    print("Bot iniciado...")
     app.run_polling()
 
 if __name__ == "__main__":
