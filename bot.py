@@ -1,147 +1,227 @@
 import os
 import requests
+import json
 import logging
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import subprocess
 
-# Configurar logging
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+# Configurar logging para ver errores
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-# Tokens
+# Obtener tokens desde variables de entorno
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
 
-# Modelo de Hugging Face (más conversacional)
-HF_API = "https://api-inference.huggingface.co/models/microsoft/DialoGPT-small"
-headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+# Reemplaza con TU ID de Telegram (obténlo de @userinfobot)
+YOUR_TELEGRAM_ID = 123456789  # ⚠️ CAMBIA ESTO
 
-print(f"TOKEN cargado: {'Sí' if BOT_TOKEN else 'No'}")
-print(">>> Iniciando Samanta <<<")
+# Verificar tokens
+print("🔧 Verificando configuración...")
+print(f"Bot Token: {'✅' if BOT_TOKEN else '❌ No encontrado'}")
+print(f"HF Token: {'✅' if HF_TOKEN else '❌ No encontrado'}")
 
-# Comando /start
+# APIs gratuitas de Hugging Face
+APIS = {
+    "chat": {
+        "url": "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.1",
+        "token": HF_TOKEN
+    },
+    "code": {
+        "url": "https://api-inference.huggingface.co/models/microsoft/CodeGPT-small-py",
+        "token": HF_TOKEN
+    },
+    "image": {
+        "url": "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-2-1",
+        "token": HF_TOKEN
+    }
+}
+
+class MultiAIAssistant:
+    def __init__(self):
+        self.conversation_history = []
+    
+    async def ask_huggingface(self, api_type, prompt):
+        """Preguntar a cualquier API de Hugging Face"""
+        if api_type not in APIS:
+            return "❌ Tipo de API no válido"
+        
+        api = APIS[api_type]
+        headers = {"Authorization": f"Bearer {api['token']}"}
+        
+        try:
+            # Preparar prompt según el tipo
+            if api_type == "chat":
+                formatted_prompt = f"<s>[INST] Eres Samanta, un asistente personal útil. Responde: {prompt} [/INST]"
+                data = {"inputs": formatted_prompt, "parameters": {"max_length": 300}}
+            elif api_type == "code":
+                formatted_prompt = f"# {prompt}\n# Escribe el código:\n"
+                data = {"inputs": formatted_prompt, "parameters": {"max_length": 400}}
+            elif api_type == "image":
+                data = {"inputs": prompt}
+            
+            # Enviar solicitud
+            response = requests.post(api['url'], headers=headers, json=data, timeout=60)
+            
+            if response.status_code != 200:
+                return f"❌ Error API: {response.status_code}"
+            
+            result = response.json()
+            
+            # Procesar respuesta según el formato
+            if api_type == "image":
+                # Guardar imagen temporalmente
+                with open("temp_image.jpg", "wb") as f:
+                    f.write(response.content)
+                return "temp_image.jpg"  # Retorna nombre del archivo
+            
+            elif isinstance(result, list):
+                if api_type == "chat":
+                    text = result[0].get('generated_text', str(result[0]))
+                    # Extraer solo la respuesta
+                    if '[/INST]' in text:
+                        text = text.split('[/INST]')[-1].strip()
+                    return text[:2000]  # Limitar para Telegram
+                elif api_type == "code":
+                    return f"```python\n{result[0].get('generated_text', str(result[0]))}\n```"
+            
+            return str(result)
+            
+        except Exception as e:
+            logger.error(f"Error en {api_type}: {e}")
+            return f"❌ Error: {str(e)}"
+
+# Inicializar asistente
+assistant = MultiAIAssistant()
+
+# ========== HANDLERS DE TELEGRAM ==========
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Hola, soy Samanta 🤖\n"
-        "Usa /ia <tu pregunta> para hablar con la IA\n"
-        "O simplemente dime 'Samanta' para una conversación básica."
-    )
+    """Comando /start"""
+    welcome = """
+🤖 *ASISTENTE PERSONAL MULTI-IA*
 
-# Comando /ia - SOLO para preguntas directas
-async def ia_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Escribe algo después de /ia\nEjemplo: /ia ¿Qué es la inteligencia artificial?")
+*Comandos disponibles:*
+/chat [mensaje] - Conversación con IA
+/code [descripción] - Generar código Python
+/image [descripción] - Generar imagen
+/help - Ver esta ayuda
+
+*Ejemplos:*
+/chat ¿Cómo aprender Python?
+/code función para ordenar lista
+/image paisaje montañoso al atardecer
+
+*Privacidad:* Solo tú puedes usar este bot.
+"""
+    await update.message.reply_text(welcome, parse_mode='Markdown')
+
+async def chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comando /chat"""
+    # Verificar que eres tú
+    if update.effective_user.id != YOUR_TELEGRAM_ID:
+        await update.message.reply_text("⛔ Acceso restringido")
         return
     
-    user_text = " ".join(context.args)
+    if not context.args:
+        await update.message.reply_text("📝 Escribe: /chat [tu mensaje]")
+        return
     
-    try:
-        processing_msg = await update.message.reply_text("🤔 Pensando...")
-        
-        # Configurar prompt para evitar repeticiones
-        prompt = f"Responde a esto como asistente: {user_text}"
-        
-        response = requests.post(
-            HF_API, 
-            headers=headers, 
-            json={
-                "inputs": prompt,
-                "parameters": {
-                    "max_length": 150,
-                    "temperature": 0.7,
-                    "do_sample": True
-                }
-            }, 
-            timeout=30
-        )
-        
-        if response.status_code != 200:
-            await processing_msg.edit_text(f"Error {response.status_code}. Intenta de nuevo.")
-            return
-        
-        data = response.json()
-        
-        # Extraer respuesta del modelo
-        reply = "No pude generar una respuesta."
-        if isinstance(data, list) and len(data) > 0:
-            if isinstance(data[0], dict):
-                if "generated_text" in data[0]:
-                    reply = data[0]["generated_text"].strip()
-                elif "response" in data[0]:
-                    reply = data[0]["response"].strip()
-            elif isinstance(data[0], str):
-                reply = data[0].strip()
-        
-        # Limpiar la respuesta si es muy similar al input
-        if reply.lower().startswith(user_text.lower()[:20]):
-            # Si la respuesta empieza igual que la pregunta, cortarla
-            reply = reply[len(user_text):].strip()
-        
-        if not reply or len(reply) < 2:
-            reply = "Recibí tu mensaje pero no pude generar una respuesta significativa."
-        
-        await processing_msg.edit_text(f"🧠 **Respuesta:**\n{reply}")
-        
-    except Exception as e:
-        logger.error(f"Error: {e}")
-        await update.message.reply_text("❌ Error de conexión. Intenta más tarde.")
+    prompt = " ".join(context.args)
+    msg = await update.message.reply_text("💭 Pensando...")
+    
+    response = await assistant.ask_huggingface("chat", prompt)
+    await msg.edit_text(response)
 
-# Handler para mensajes NORMALES - SOLO responde a saludos/menciones
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.lower().strip()
+async def code_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comando /code"""
+    if update.effective_user.id != YOUR_TELEGRAM_ID:
+        await update.message.reply_text("⛔ Acceso restringido")
+        return
     
-    # NO usar IA para mensajes generales - solo respuestas predefinidas
-    if any(word in text for word in ["hola", "hello", "hi", "buenos días", "buenas"]):
-        await update.message.reply_text("¡Hola! 👋 ¿Cómo estás?")
+    if not context.args:
+        await update.message.reply_text("💻 Escribe: /code [descripción del código]")
+        return
     
-    elif "sam" in text or "samanta" in text:
-        responses = [
-            "¿Sí? Dime en qué puedo ayudarte.",
-            "¡Aquí estoy! ¿Qué necesitas?",
-            "Te escucho, ¿qué pasa?",
-            "Hola, soy Samanta. ¿En qué puedo asistirte?"
-        ]
-        import random
-        await update.message.reply_text(random.choice(responses))
+    prompt = " ".join(context.args)
+    msg = await update.message.reply_text("🖥️ Generando código...")
     
-    elif any(word in text for word in ["cómo estás", "qué tal", "como estas"]):
-        await update.message.reply_text("¡Estoy bien, gracias por preguntar! ¿Y tú?")
+    response = await assistant.ask_huggingface("code", prompt)
+    await msg.edit_text(response)
+
+async def image_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comando /image"""
+    if update.effective_user.id != YOUR_TELEGRAM_ID:
+        await update.message.reply_text("⛔ Acceso restringido")
+        return
     
-    elif any(word in text for word in ["adiós", "bye", "chao", "nos vemos"]):
-        await update.message.reply_text("¡Adiós! 👋 Fue un gusto hablar contigo.")
+    if not context.args:
+        await update.message.reply_text("🎨 Escribe: /image [descripción de la imagen]")
+        return
     
-    elif "gracias" in text:
-        await update.message.reply_text("¡De nada! 😊")
+    prompt = " ".join(context.args)
+    msg = await update.message.reply_text("🎨 Creando imagen...")
     
+    image_path = await assistant.ask_huggingface("image", prompt)
+    
+    if image_path and os.path.exists(image_path):
+        with open(image_path, 'rb') as photo:
+            await update.message.reply_photo(photo, caption=f"🖼️ {prompt}")
+        os.remove(image_path)  # Limpiar
+        await msg.delete()
     else:
-        # Para otros mensajes, NO RESPONDER automáticamente
-        # O puedes dar una sugerencia
-        await update.message.reply_text(
-            "No estoy segura de cómo responder a eso.\n"
-            "Puedes:\n"
-            "1. Saludarme o mencionar mi nombre\n"
-            "2. Usar /ia seguido de tu pregunta\n"
-            "3. Preguntarme algo específico"
-        )
+        await msg.edit_text("❌ No pude generar la imagen")
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comando /help"""
+    await start(update, context)
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mensajes normales - solo responder si mencionan al bot"""
+    if update.effective_user.id != YOUR_TELEGRAM_ID:
+        return
+    
+    text = update.message.text.lower()
+    
+    # Solo responder si mencionan al bot
+    if any(word in text for word in ["samanta", "sam", "bot", "asistente"]):
+        prompt = update.message.text
+        msg = await update.message.reply_text("💭 Pensando...")
+        response = await assistant.ask_huggingface("chat", prompt)
+        await msg.edit_text(response)
 
 def main():
+    """Función principal"""
+    print("🚀 Iniciando Asistente Personal...")
+    
     if not BOT_TOKEN:
-        raise ValueError("❌ No se encontró TELEGRAM_BOT_TOKEN")
+        print("❌ ERROR: No hay BOT_TOKEN")
+        print("💡 Solución: Crea archivo .env con TELEGRAM_BOT_TOKEN=tu_token")
+        return
     
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    # Crear aplicación de Telegram
+    app = Application.builder().token(BOT_TOKEN).build()
     
-    # Handlers
+    # Registrar comandos
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("ia", ia_command))
+    app.add_handler(CommandHandler("chat", chat_command))
+    app.add_handler(CommandHandler("code", code_command))
+    app.add_handler(CommandHandler("image", image_command))
+    app.add_handler(CommandHandler("help", help_command))
     
-    # IMPORTANTE: Solo responder a mensajes de texto que NO sean comandos
+    # Mensajes normales
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("✅ Bot iniciado correctamente")
-    print("📝 Comandos disponibles: /start, /ia")
-    print("💬 El bot SOLO responderá a saludos o cuando digas 'Samanta'")
+    print("✅ Bot configurado correctamente")
+    print("📱 Envíale /start a tu bot en Telegram")
+    print("🔒 Solo responderá a tu ID:", YOUR_TELEGRAM_ID)
     
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Iniciar bot
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
